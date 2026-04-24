@@ -1,17 +1,23 @@
 """
 Campbell's Restaurant — AI Marketing System
-FastAPI Backend with Supabase Integration
+FastAPI Backend v3.0 — Full with Analysis Endpoints
 
 Endpoints:
-  GET  /                        → health check
-  POST /api/segment             → customer segment + RFM
-  POST /api/churn               → churn probability + risk level
-  POST /api/sentiment           → ABSA triplets from review text
-  POST /api/generate-message    → personalized SMS + email + app notification
-  GET  /api/dashboard           → full stats for frontend dashboard (live from Supabase)
-  POST /api/full-pipeline       → all of the above in one call
-  GET  /api/customers           → paginated customer list from Supabase
-  GET  /api/messages-log        → recent generated messages log
+  GET  /                              → health check
+  POST /api/segment                   → customer segment
+  POST /api/churn                     → churn probability + risk level
+  POST /api/sentiment                 → ABSA triplets from review
+  POST /api/generate-message          → personalized SMS + email + app notification
+  POST /api/full-pipeline             → all of the above in one call
+  GET  /api/dashboard                 → full stats (live from Supabase)
+  GET  /api/customers                 → paginated customer list
+  GET  /api/messages-log             → recent generated messages
+  GET  /api/analysis/kpis            → all KPI numbers
+  GET  /api/analysis/rfm             → RFM scatter data
+  GET  /api/analysis/churn-distribution → churn histogram + by segment
+  GET  /api/analysis/monthly-visits  → visits by month
+  GET  /api/analysis/revenue         → revenue breakdown
+  GET  /api/analysis/sentiment-breakdown → ABSA charts data
 """
 
 from fastapi import FastAPI, HTTPException, Query
@@ -24,6 +30,7 @@ import pickle
 import json
 import re
 import os
+import ast
 import requests
 import warnings
 from datetime import datetime, timezone
@@ -44,12 +51,12 @@ warnings.filterwarnings('ignore')
 app = FastAPI(
     title       = "Campbell's AI Marketing API",
     description = "Churn Prediction · Customer Segmentation · ABSA · Personalized Messages",
-    version     = "2.0.0"
+    version     = "3.0.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],   # restrict in production to your Lovable domain
+    allow_origins     = ["*"],
     allow_credentials = True,
     allow_methods     = ["*"],
     allow_headers     = ["*"],
@@ -58,12 +65,12 @@ app.add_middleware(
 # ─────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────
-GROQ_API_KEY    = os.getenv("GROQ_API_KEY",    "YOUR_GROQ_API_KEY_HERE")
-SUPABASE_URL    = os.getenv("SUPABASE_URL",    "YOUR_SUPABASE_URL_HERE")
-SUPABASE_KEY    = os.getenv("SUPABASE_KEY",    "YOUR_SUPABASE_ANON_KEY_HERE")
-GROQ_MODEL      = "llama-3.3-70b-versatile"
-DATA_DIR        = os.getenv("DATA_DIR", ".")
-DISCOUNT_MAP    = {'High': 20, 'Medium': 15, 'Low': 10}
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "YOUR_SUPABASE_URL_HERE")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "YOUR_SUPABASE_ANON_KEY_HERE")
+GROQ_MODEL   = "llama-3.3-70b-versatile"
+DATA_DIR     = os.getenv("DATA_DIR", ".")
+DISCOUNT_MAP = {'High': 20, 'Medium': 15, 'Low': 10}
 
 # ─────────────────────────────────────────────
 # SUPABASE CLIENT
@@ -83,21 +90,21 @@ class CustomerRequest(BaseModel):
     recency         : float
     frequency       : int
     monetary        : float
-    unique_items    : Optional[int]   = 1
-    avg_order_val   : Optional[float] = None
-    avg_tip         : Optional[float] = 0.0
-    discount_used   : Optional[int]   = 0
-    visits_nov      : Optional[int]   = 0
-    visits_dec      : Optional[int]   = 0
-    visits_jan      : Optional[int]   = 0
-    days_since_first: Optional[int]   = None
+    unique_items    : Optional[int]       = 1
+    avg_order_val   : Optional[float]     = None
+    avg_tip         : Optional[float]     = 0.0
+    discount_used   : Optional[int]       = 0
+    visits_nov      : Optional[int]       = 0
+    visits_dec      : Optional[int]       = 0
+    visits_jan      : Optional[int]       = 0
+    days_since_first: Optional[int]       = None
     favorite_items  : Optional[List[str]] = []
 
 class SentimentRequest(BaseModel):
     review: str
 
 class MessageRequest(BaseModel):
-    customer_id      : Optional[str]  = None
+    customer_id      : Optional[str]      = None
     segment          : str
     recency          : float
     frequency        : int
@@ -112,17 +119,17 @@ class FullPipelineRequest(BaseModel):
     recency         : float
     frequency       : int
     monetary        : float
-    unique_items    : Optional[int]   = 1
-    avg_order_val   : Optional[float] = None
-    avg_tip         : Optional[float] = 0.0
-    discount_used   : Optional[int]   = 0
-    visits_nov      : Optional[int]   = 0
-    visits_dec      : Optional[int]   = 0
-    visits_jan      : Optional[int]   = 0
-    days_since_first: Optional[int]   = None
+    unique_items    : Optional[int]       = 1
+    avg_order_val   : Optional[float]     = None
+    avg_tip         : Optional[float]     = 0.0
+    discount_used   : Optional[int]       = 0
+    visits_nov      : Optional[int]       = 0
+    visits_dec      : Optional[int]       = 0
+    visits_jan      : Optional[int]       = 0
+    days_since_first: Optional[int]       = None
     favorite_items  : Optional[List[str]] = []
-    review          : Optional[str]   = None
-    customer_id     : Optional[str]   = None
+    review          : Optional[str]       = None
+    customer_id     : Optional[str]       = None
 
 # ─────────────────────────────────────────────
 # MODEL STORE
@@ -144,7 +151,7 @@ def load_models():
         with open(f"{DATA_DIR}/tfidf_sent.pkl",        'rb') as f: models['tfidf_sent']  = pickle.load(f)
         print("✅ All models loaded successfully")
     except FileNotFoundError as e:
-        print(f"⚠️  Model file not found: {e}. Run the notebook first to generate pickle files.")
+        print(f"⚠️  Model file not found: {e}")
 
 def load_menu():
     try:
@@ -162,37 +169,35 @@ def load_menu():
 menu_df = pd.DataFrame()
 
 # ─────────────────────────────────────────────
-# SUPABASE — TABLE CREATION
+# SUPABASE TABLE SQL
 # ─────────────────────────────────────────────
-
 CREATE_CUSTOMERS_SQL = """
 CREATE TABLE IF NOT EXISTS customers (
-    id                  TEXT PRIMARY KEY,
-    segment             TEXT,
-    recency             FLOAT,
-    frequency           INTEGER,
-    monetary            FLOAT,
-    unique_items        INTEGER,
-    avg_order_val       FLOAT,
-    avg_tip             FLOAT,
-    discount_used       INTEGER,
-    visits_nov          INTEGER,
-    visits_dec          INTEGER,
-    visits_jan          INTEGER,
-    days_since_first    INTEGER,
-    churn_probability   FLOAT,
-    risk_level          TEXT,
-    tier                TEXT,
-    discount_offered    TEXT,
-    created_at          TIMESTAMPTZ DEFAULT NOW(),
-    updated_at          TIMESTAMPTZ DEFAULT NOW()
-);
-"""
+    id                TEXT PRIMARY KEY,
+    segment           TEXT,
+    recency           FLOAT,
+    frequency         INTEGER,
+    monetary          FLOAT,
+    unique_items      INTEGER,
+    avg_order_val     FLOAT,
+    avg_tip           FLOAT,
+    discount_used     INTEGER,
+    visits_nov        INTEGER,
+    visits_dec        INTEGER,
+    visits_jan        INTEGER,
+    days_since_first  INTEGER,
+    churn_probability FLOAT,
+    risk_level        TEXT,
+    tier              TEXT,
+    discount_offered  TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
+);"""
 
 CREATE_MESSAGES_LOG_SQL = """
 CREATE TABLE IF NOT EXISTS messages_log (
     id               BIGSERIAL PRIMARY KEY,
-    customer_id      TEXT REFERENCES customers(id) ON DELETE SET NULL,
+    customer_id      TEXT,
     segment          TEXT,
     risk_level       TEXT,
     discount_offered TEXT,
@@ -203,187 +208,102 @@ CREATE TABLE IF NOT EXISTS messages_log (
     aspects          JSONB,
     sentiments       JSONB,
     created_at       TIMESTAMPTZ DEFAULT NOW()
-);
-"""
+);"""
 
 CREATE_ABSA_SQL = """
 CREATE TABLE IF NOT EXISTS absa_predictions (
     id          BIGSERIAL PRIMARY KEY,
     customer_id TEXT,
     review      TEXT,
-    aspects     JSONB,
-    sentiments  JSONB,
-    opinions    JSONB,
+    aspects     TEXT,
+    sentiments  TEXT,
+    opinions    TEXT,
     triplets    JSONB,
     created_at  TIMESTAMPTZ DEFAULT NOW()
-);
-"""
-
-def create_tables():
-    """Create Supabase tables via raw SQL using the REST API."""
-    sb = get_supabase()
-    sql_statements = [
-        CREATE_CUSTOMERS_SQL,
-        CREATE_MESSAGES_LOG_SQL,
-        CREATE_ABSA_SQL,
-    ]
-    for sql in sql_statements:
-        try:
-            sb.rpc("exec_sql", {"query": sql}).execute()
-        except Exception as e:
-            # Tables might already exist — try direct approach via postgrest
-            print(f"ℹ️  Table creation note: {e}")
-    print("✅ Supabase tables ready")
+);"""
 
 def ensure_tables_via_api():
-    """
-    Alternative: Create tables using Supabase Management API.
-    Uses SUPABASE_SERVICE_KEY (not anon key) for admin operations.
-
-    If you have your service_role key set as SUPABASE_SERVICE_KEY,
-    this runs raw SQL directly. Otherwise tables must be created once
-    via the Supabase dashboard SQL editor using the SQL above.
-    """
     service_key = os.getenv("SUPABASE_SERVICE_KEY", "")
     project_ref = SUPABASE_URL.replace("https://", "").replace(".supabase.co", "")
-
     if not service_key:
         print("⚠️  SUPABASE_SERVICE_KEY not set — skipping auto table creation.")
-        print("    Run this SQL once in your Supabase SQL editor:")
-        print("    " + CREATE_CUSTOMERS_SQL[:80] + "...")
         return False
-
     all_sql = "\n".join([CREATE_CUSTOMERS_SQL, CREATE_MESSAGES_LOG_SQL, CREATE_ABSA_SQL])
     url     = f"https://api.supabase.com/v1/projects/{project_ref}/database/query"
-    headers = {
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type" : "application/json"
-    }
+    headers = {"Authorization": f"Bearer {service_key}", "Content-Type": "application/json"}
     try:
         resp = requests.post(url, headers=headers, json={"query": all_sql}, timeout=30)
         if resp.status_code in (200, 201):
             print("✅ Tables created via Management API")
             return True
-        else:
-            print(f"⚠️  Management API returned {resp.status_code}: {resp.text[:200]}")
-            return False
+        print(f"⚠️  Management API {resp.status_code}: {resp.text[:200]}")
+        return False
     except Exception as e:
         print(f"⚠️  Management API error: {e}")
         return False
 
-# ─────────────────────────────────────────────
-# SUPABASE — SEED CUSTOMER DATA FROM CSV
-# ─────────────────────────────────────────────
-
 def seed_customers_from_csv():
-    """
-    Load churn_scores_final.csv and upsert all rows into Supabase customers table.
-    Safe to call multiple times — uses upsert so no duplicates.
-    """
     csv_path = f"{DATA_DIR}/churn_scores_final.csv"
     if not os.path.exists(csv_path):
-        print(f"⚠️  {csv_path} not found — skipping customer seed. Run notebook first.")
+        print(f"⚠️  {csv_path} not found — skipping seed.")
         return 0
-
     df = pd.read_csv(csv_path)
-    print(f"📦 Seeding {len(df)} customers to Supabase...")
-
-    # Normalise column names — adapt to whatever your CSV actually has
+    try:
+        sb    = get_supabase()
+        check = sb.table("customers").select("id", count="exact").execute()
+        if check.count and check.count >= len(df):
+            print(f"ℹ️  customers already has {check.count} rows — skipping seed")
+            return check.count
+    except:
+        pass
+    print(f"📦 Seeding {len(df)} customers...")
     col_map = {
-        'Last 4 Card Digits': 'id',
-        'Segment'            : 'segment',
-        'Recency'            : 'recency',
-        'Frequency'          : 'frequency',
-        'Monetary'           : 'monetary',
-        'Unique_Items'       : 'unique_items',
-        'Avg_Order_Val'      : 'avg_order_val',
-        'Avg_Tip'            : 'avg_tip',
-        'Discount_Used'      : 'discount_used',
-        'Visits_Nov'         : 'visits_nov',
-        'Visits_Dec'         : 'visits_dec',
-        'Visits_Jan'         : 'visits_jan',
-        'Days_Since_First'   : 'days_since_first',
-        'Churn_Probability'  : 'churn_probability',
-        'Risk_Level'         : 'risk_level',
-        'Tier'               : 'tier',
+        'Last 4 Card Digits':'id','Segment':'segment','Recency':'recency',
+        'Frequency':'frequency','Monetary':'monetary','Unique_Items':'unique_items',
+        'Avg_Order_Val':'avg_order_val','Avg_Tip':'avg_tip','Discount_Used':'discount_used',
+        'Visits_Nov':'visits_nov','Visits_Dec':'visits_dec','Visits_Jan':'visits_jan',
+        'Days_Since_First':'days_since_first','Churn_Probability':'churn_probability',
+        'Risk_Level':'risk_level','Tier':'tier',
     }
     df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-
-    # Ensure required columns exist with defaults
-    required = {
-        'id': lambda i: f"customer_{i}",
-        'segment': 'Unknown', 'recency': 0.0, 'frequency': 0,
-        'monetary': 0.0, 'unique_items': 1, 'avg_order_val': 0.0,
-        'avg_tip': 0.0, 'discount_used': 0, 'visits_nov': 0,
-        'visits_dec': 0, 'visits_jan': 0, 'days_since_first': 0,
-        'churn_probability': 0.0, 'risk_level': 'Low', 'tier': 'Unknown',
-    }
-    for col, default in required.items():
-        if col not in df.columns:
-            df[col] = [default(i) if callable(default) else default for i in range(len(df))]
-
     df['id']               = df['id'].astype(str).str.strip()
     df['discount_offered'] = df['risk_level'].map(lambda r: f"{DISCOUNT_MAP.get(str(r), 15)}%")
-
-    # Fill NaNs to avoid JSON serialization issues
     df = df.fillna(0)
-
-    keep_cols = list(required.keys()) + ['discount_offered']
-    df        = df[[c for c in keep_cols if c in df.columns]]
-
-    # Batch upsert in chunks of 500
-    records = df.to_dict('records')
-    sb      = get_supabase()
-    batch   = 500
-    seeded  = 0
-    for i in range(0, len(records), batch):
-        chunk = records[i:i+batch]
-        # Convert all numpy types to native Python
-        chunk = [
-            {k: (int(v) if isinstance(v, (np.integer,)) else
-                 float(v) if isinstance(v, (np.floating,)) else v)
-             for k, v in row.items()}
-            for row in chunk
-        ]
+    keep    = ['id','segment','recency','frequency','monetary','unique_items','avg_order_val',
+               'avg_tip','discount_used','visits_nov','visits_dec','visits_jan',
+               'days_since_first','churn_probability','risk_level','tier','discount_offered']
+    df      = df[[c for c in keep if c in df.columns]]
+    records = [
+        {k: (int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v)
+         for k, v in row.items()}
+        for row in df.to_dict('records')
+    ]
+    sb     = get_supabase()
+    seeded = 0
+    for i in range(0, len(records), 500):
         try:
-            sb.table("customers").upsert(chunk, on_conflict="id").execute()
-            seeded += len(chunk)
+            sb.table("customers").upsert(records[i:i+500], on_conflict="id").execute()
+            seeded += len(records[i:i+500])
         except Exception as e:
-            print(f"⚠️  Batch {i//batch + 1} upsert error: {e}")
-
-    print(f"✅ Seeded {seeded} customers into Supabase")
+            print(f"⚠️  Seed batch error: {e}")
+    print(f"✅ Seeded {seeded} customers")
     return seeded
 
 # ─────────────────────────────────────────────
 # STARTUP
 # ─────────────────────────────────────────────
-
 @app.on_event("startup")
 async def startup_event():
     global menu_df
     load_models()
     menu_df = load_menu()
     print(f"✅ Menu loaded: {len(menu_df)} items")
-
-    # Create tables then seed data
-    tables_ok = ensure_tables_via_api()
-    if not tables_ok:
-        print("""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ACTION REQUIRED — Run this SQL once in your Supabase SQL Editor:
-https://supabase.com/dashboard/project/_/sql
-
-""" + CREATE_CUSTOMERS_SQL + "\n" + CREATE_MESSAGES_LOG_SQL + "\n" + CREATE_ABSA_SQL + """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        """)
-
-    # Always try to seed — upsert is idempotent
+    ensure_tables_via_api()
     seed_customers_from_csv()
 
 # ─────────────────────────────────────────────
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────────
-
 def get_segment(recency, frequency, monetary) -> str:
     if 'kmeans' not in models:
         raise HTTPException(status_code=503, detail="Segmentation model not loaded")
@@ -393,9 +313,7 @@ def get_segment(recency, frequency, monetary) -> str:
 
 def get_churn_score(req: CustomerRequest, segment: str) -> dict:
     if req.frequency == 1:
-        if req.recency < 14:   prob = 0.30
-        elif req.recency < 30: prob = 0.65
-        else:                  prob = 0.92
+        prob = 0.30 if req.recency < 14 else (0.65 if req.recency < 30 else 0.92)
         tier = "Rule-Based"
     else:
         if 'churn' not in models:
@@ -418,11 +336,7 @@ def get_churn_score(req: CustomerRequest, segment: str) -> dict:
         X    = pd.DataFrame([features])[models['churn_feats']]
         prob = float(models['churn'].predict_proba(X)[0][1])
         tier = "XGBoost"
-
-    if prob < 0.33:   risk = "Low"
-    elif prob < 0.66: risk = "Medium"
-    else:             risk = "High"
-
+    risk = "Low" if prob < 0.33 else ("Medium" if prob < 0.66 else "High")
     return {"churn_probability": round(prob, 4), "risk_level": risk, "tier": tier}
 
 OPINION_KEYWORDS = {
@@ -491,7 +405,6 @@ def generate_message(req: MessageRequest) -> dict:
     highlights = []
     if not menu_df.empty:
         highlights = menu_df.sample(min(3, len(menu_df)))[['itemName','itemPrice','Category']].to_dict('records')
-
     prompt = f"""You are a warm, friendly marketing assistant for Campbell's Restaurant.
 
 CUSTOMER PROFILE:
@@ -520,7 +433,7 @@ RULES:
 - SMS: max 160 chars, casual and punchy
 - Email: warm, personal, 3-4 short paragraphs
 - App notification: max 80 chars, exciting
-- Tone: Lost→urgent ("we miss you!"), New→welcoming, Occasional→appreciative, Regular→VIP
+- Tone: Lost→urgent, New→welcoming, Occasional→appreciative, Regular→VIP
 - NEVER mention churn, AI, or risk scores"""
 
     response = call_groq(prompt)
@@ -533,97 +446,87 @@ RULES:
         return {"sms": response[:160], "email": {}, "app_notification": response[:80]}
 
 # ─────────────────────────────────────────────
-# SUPABASE — WRITE HELPERS
+# SUPABASE WRITE HELPERS
 # ─────────────────────────────────────────────
-
-def upsert_customer_to_db(customer_id: str, segment: str, req, churn: dict):
-    """Upsert a single customer record (called from full-pipeline)."""
-    if not customer_id:
-        return
+def upsert_customer_to_db(customer_id, segment, req, churn):
+    if not customer_id: return
     sb = get_supabase()
-    record = {
-        "id"               : str(customer_id),
-        "segment"          : segment,
-        "recency"          : float(req.recency),
-        "frequency"        : int(req.frequency),
-        "monetary"         : float(req.monetary),
-        "unique_items"     : int(req.unique_items or 1),
-        "avg_order_val"    : float(req.avg_order_val or req.monetary),
-        "avg_tip"          : float(req.avg_tip or 0),
-        "discount_used"    : int(req.discount_used or 0),
-        "visits_nov"       : int(req.visits_nov or 0),
-        "visits_dec"       : int(req.visits_dec or 0),
-        "visits_jan"       : int(req.visits_jan or 0),
-        "days_since_first" : int(req.days_since_first or req.recency),
-        "churn_probability": float(churn['churn_probability']),
-        "risk_level"       : churn['risk_level'],
-        "tier"             : churn['tier'],
-        "discount_offered" : f"{DISCOUNT_MAP.get(churn['risk_level'], 15)}%",
-        "updated_at"       : datetime.now(timezone.utc).isoformat(),
-    }
     try:
-        sb.table("customers").upsert(record, on_conflict="id").execute()
+        sb.table("customers").upsert({
+            "id"               : str(customer_id),
+            "segment"          : segment,
+            "recency"          : float(req.recency),
+            "frequency"        : int(req.frequency),
+            "monetary"         : float(req.monetary),
+            "unique_items"     : int(req.unique_items or 1),
+            "avg_order_val"    : float(req.avg_order_val or req.monetary),
+            "avg_tip"          : float(req.avg_tip or 0),
+            "discount_used"    : int(req.discount_used or 0),
+            "visits_nov"       : int(req.visits_nov or 0),
+            "visits_dec"       : int(req.visits_dec or 0),
+            "visits_jan"       : int(req.visits_jan or 0),
+            "days_since_first" : int(req.days_since_first or req.recency),
+            "churn_probability": float(churn['churn_probability']),
+            "risk_level"       : churn['risk_level'],
+            "tier"             : churn['tier'],
+            "discount_offered" : f"{DISCOUNT_MAP.get(churn['risk_level'], 15)}%",
+            "updated_at"       : datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="id").execute()
     except Exception as e:
         print(f"⚠️  Customer upsert failed: {e}")
 
-def log_message_to_db(customer_id: Optional[str], req: MessageRequest, messages: dict, absa: Optional[dict]):
-    """Insert a generated message into messages_log."""
-    sb = get_supabase()
+def log_message_to_db(customer_id, req: MessageRequest, messages: dict, absa):
+    sb    = get_supabase()
     email = messages.get("email", {})
-    record = {
-        "customer_id"     : str(customer_id) if customer_id else None,
-        "segment"         : req.segment,
-        "risk_level"      : req.risk_level,
-        "discount_offered": f"{DISCOUNT_MAP.get(req.risk_level, 15)}%",
-        "sms"             : messages.get("sms", ""),
-        "email_subject"   : email.get("subject", "") if isinstance(email, dict) else "",
-        "email_body"      : email.get("body", "")    if isinstance(email, dict) else "",
-        "app_notification": messages.get("app_notification", ""),
-        "aspects"         : json.dumps(absa['aspects']    if absa else []),
-        "sentiments"      : json.dumps(absa['sentiments'] if absa else []),
-    }
     try:
-        sb.table("messages_log").insert(record).execute()
+        sb.table("messages_log").insert({
+            "customer_id"     : str(customer_id) if customer_id else None,
+            "segment"         : req.segment,
+            "risk_level"      : req.risk_level,
+            "discount_offered": f"{DISCOUNT_MAP.get(req.risk_level, 15)}%",
+            "sms"             : messages.get("sms", ""),
+            "email_subject"   : email.get("subject", "") if isinstance(email, dict) else "",
+            "email_body"      : email.get("body", "")    if isinstance(email, dict) else "",
+            "app_notification": messages.get("app_notification", ""),
+            "aspects"         : json.dumps(absa['aspects']    if absa else []),
+            "sentiments"      : json.dumps(absa['sentiments'] if absa else []),
+        }).execute()
     except Exception as e:
-        print(f"⚠️  Message log insert failed: {e}")
+        print(f"⚠️  Message log failed: {e}")
 
-def log_absa_to_db(customer_id: Optional[str], review: str, absa: dict):
-    """Insert ABSA result into absa_predictions."""
+def log_absa_to_db(customer_id, review: str, absa: dict):
     sb = get_supabase()
-    record = {
-        "customer_id": str(customer_id) if customer_id else None,
-        "review"     : review,
-        "aspects"    : json.dumps(absa['aspects']),
-        "sentiments" : json.dumps(absa['sentiments']),
-        "opinions"   : json.dumps(absa['opinions']),
-        "triplets"   : json.dumps(absa['triplets']),
-    }
     try:
-        sb.table("absa_predictions").insert(record).execute()
+        sb.table("absa_predictions").insert({
+            "customer_id": str(customer_id) if customer_id else None,
+            "review"     : review,
+            "aspects"    : json.dumps(absa['aspects']),
+            "sentiments" : json.dumps(absa['sentiments']),
+            "opinions"   : json.dumps(absa['opinions']),
+            "triplets"   : json.dumps(absa['triplets']),
+        }).execute()
     except Exception as e:
-        print(f"⚠️  ABSA log insert failed: {e}")
+        print(f"⚠️  ABSA log failed: {e}")
 
 # ─────────────────────────────────────────────
-# ENDPOINTS
+# CORE ENDPOINTS
 # ─────────────────────────────────────────────
-
 @app.get("/")
 def health_check():
     return {
         "status"       : "ok",
         "service"      : "Campbell's AI Marketing API",
-        "version"      : "2.0.0",
+        "version"      : "3.0.0",
         "models_loaded": list(models.keys()),
         "supabase"     : SUPABASE_URL != "YOUR_SUPABASE_URL_HERE"
     }
 
-# ── Segmentation ──
 @app.post("/api/segment")
 def segment_customer(req: CustomerRequest):
     segment = get_segment(req.recency, req.frequency, req.monetary)
-    return {"segment": segment, "recency": req.recency, "frequency": req.frequency, "monetary": req.monetary}
+    return {"segment": segment, "recency": req.recency,
+            "frequency": req.frequency, "monetary": req.monetary}
 
-# ── Churn Prediction ──
 @app.post("/api/churn")
 def predict_churn(req: CustomerRequest):
     segment = get_segment(req.recency, req.frequency, req.monetary)
@@ -636,7 +539,6 @@ def predict_churn(req: CustomerRequest):
         "discount_to_offer": f"{DISCOUNT_MAP.get(result['risk_level'], 15)}%"
     }
 
-# ── Sentiment Analysis ──
 @app.post("/api/sentiment")
 def analyze_sentiment(req: SentimentRequest):
     result = run_absa(req.review)
@@ -648,11 +550,9 @@ def analyze_sentiment(req: SentimentRequest):
         "triplets"  : result['triplets']
     }
 
-# ── Message Generation ──
 @app.post("/api/generate-message")
 def generate_personalized_message(req: MessageRequest):
     messages = generate_message(req)
-    # Log to Supabase
     log_message_to_db(req.customer_id, req, messages, None)
     return {
         "customer_id"     : req.customer_id,
@@ -662,23 +562,15 @@ def generate_personalized_message(req: MessageRequest):
         "messages"        : messages
     }
 
-# ── Full Pipeline ──
 @app.post("/api/full-pipeline")
 def full_pipeline(req: FullPipelineRequest):
-    # Step 1 — Segment
-    segment = get_segment(req.recency, req.frequency, req.monetary)
-
-    # Step 2 — Churn
+    segment   = get_segment(req.recency, req.frequency, req.monetary)
     churn_req = CustomerRequest(**req.dict(exclude={"review", "customer_id"}))
     churn     = get_churn_score(churn_req, segment)
-
-    # Step 3 — ABSA (optional)
-    absa = None
+    absa      = None
     if req.review:
         absa = run_absa(req.review)
         log_absa_to_db(req.customer_id, req.review, absa)
-
-    # Step 4 — Generate message
     msg_req = MessageRequest(
         customer_id      = req.customer_id,
         segment          = segment,
@@ -692,11 +584,8 @@ def full_pipeline(req: FullPipelineRequest):
         sentiments       = absa['sentiments'] if absa else []
     )
     messages = generate_message(msg_req)
-
-    # Persist to Supabase
     upsert_customer_to_db(req.customer_id, segment, req, churn)
     log_message_to_db(req.customer_id, msg_req, messages, absa)
-
     return {
         "segment"          : segment,
         "churn_probability": churn['churn_probability'],
@@ -707,126 +596,298 @@ def full_pipeline(req: FullPipelineRequest):
         "messages"         : messages
     }
 
-# ── Dashboard Stats (live from Supabase) ──
 @app.get("/api/dashboard")
 def get_dashboard_stats():
-    """
-    Return aggregated stats for the Lovable dashboard.
-    Pulls live data from Supabase customers table.
-    Falls back to CSV if Supabase is not configured.
-    """
     sb = get_supabase()
-
     try:
-        # Fetch all customers (up to 10k rows)
-        resp = sb.table("customers").select("segment, risk_level, recency, frequency, monetary, churn_probability").limit(10000).execute()
+        resp = sb.table("customers").select(
+            "segment, risk_level, recency, frequency, monetary, churn_probability"
+        ).limit(10000).execute()
         rows = resp.data
-
-        if not rows:
-            raise ValueError("No data in Supabase yet")
-
+        if not rows: raise ValueError("No data")
         df = pd.DataFrame(rows)
-
     except Exception as e:
-        print(f"⚠️  Supabase dashboard query failed: {e} — falling back to CSV")
+        print(f"⚠️  Supabase fallback: {e}")
         try:
             df = pd.read_csv(f"{DATA_DIR}/churn_scores_final.csv")
-            col_map = {
-                'Segment': 'segment', 'Risk_Level': 'risk_level',
-                'Recency': 'recency', 'Frequency': 'frequency',
-                'Monetary': 'monetary', 'Churn_Probability': 'churn_probability'
-            }
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        except FileNotFoundError:
-            raise HTTPException(status_code=503, detail="No data source available. Configure Supabase or run notebook.")
+            df = df.rename(columns={
+                'Segment':'segment','Risk_Level':'risk_level','Recency':'recency',
+                'Frequency':'frequency','Monetary':'monetary','Churn_Probability':'churn_probability'
+            })
+        except:
+            raise HTTPException(status_code=503, detail="No data available")
 
-    seg_counts  = df['segment'].value_counts().to_dict()   if 'segment'   in df.columns else {}
-    risk_counts = df['risk_level'].value_counts().to_dict() if 'risk_level' in df.columns else {}
-
-    avg_churn = float(df['churn_probability'].mean()) if 'churn_probability' in df.columns else 0
-    churn_rate = round(avg_churn * 100, 2)
-
-    top_risk = (
+    seg_counts     = df['segment'].value_counts().to_dict()   if 'segment'    in df.columns else {}
+    risk_counts    = df['risk_level'].value_counts().to_dict() if 'risk_level' in df.columns else {}
+    churn_rate     = round(float(df['churn_probability'].mean()) * 100, 2) if 'churn_probability' in df.columns else 0
+    top_risk       = (
         df[df['risk_level'].astype(str) == 'High']
         .sort_values('churn_probability', ascending=False)
-        .head(20)
-        [['segment','recency','frequency','monetary','churn_probability','risk_level']]
+        .head(20)[['segment','recency','frequency','monetary','churn_probability','risk_level']]
         .to_dict('records')
     ) if 'risk_level' in df.columns else []
-
-    rfm_by_segment = {}
-    if 'segment' in df.columns:
-        rfm_by_segment = (
-            df.groupby('segment')[['recency','frequency','monetary']]
-            .mean().round(2)
-            .to_dict('index')
-        )
-
-    # Recent messages count
-    recent_messages = 0
+    rfm_by_segment = df.groupby('segment')[['recency','frequency','monetary']].mean().round(2).to_dict('index') if 'segment' in df.columns else {}
+    messages_sent  = 0
     try:
-        msg_resp        = sb.table("messages_log").select("id", count="exact").execute()
-        recent_messages = msg_resp.count or 0
-    except:
-        pass
-
+        msg_resp      = sb.table("messages_log").select("id", count="exact").execute()
+        messages_sent = msg_resp.count or 0
+    except: pass
     return {
-        "total_customers"  : int(len(df)),
-        "segment_counts"   : seg_counts,
-        "risk_counts"      : risk_counts,
-        "churn_rate_pct"   : churn_rate,
-        "top_at_risk"      : top_risk,
-        "rfm_by_segment"   : rfm_by_segment,
-        "messages_sent"    : recent_messages,
-        "data_source"      : "supabase"
+        "total_customers": int(len(df)),
+        "segment_counts" : seg_counts,
+        "risk_counts"    : risk_counts,
+        "churn_rate_pct" : churn_rate,
+        "top_at_risk"    : top_risk,
+        "rfm_by_segment" : rfm_by_segment,
+        "messages_sent"  : messages_sent,
+        "data_source"    : "supabase"
     }
 
-# ── Customers List (paginated) ──
 @app.get("/api/customers")
 def list_customers(
-    segment   : Optional[str] = Query(None, description="Filter by segment"),
-    risk_level: Optional[str] = Query(None, description="Filter by risk level: Low/Medium/High"),
-    page      : int           = Query(1,    ge=1, description="Page number"),
-    page_size : int           = Query(50,   ge=1, le=200, description="Rows per page")
+    segment   : Optional[str] = Query(None),
+    risk_level: Optional[str] = Query(None),
+    page      : int           = Query(1,  ge=1),
+    page_size : int           = Query(50, ge=1, le=200)
 ):
-    """
-    Return paginated customer list from Supabase.
-    Supports filtering by segment and/or risk_level.
-    """
     sb     = get_supabase()
     offset = (page - 1) * page_size
-
-    query = sb.table("customers").select("*", count="exact")
-    if segment:
-        query = query.eq("segment", segment)
-    if risk_level:
-        query = query.eq("risk_level", risk_level)
-
+    query  = sb.table("customers").select("*", count="exact")
+    if segment:    query = query.eq("segment",    segment)
+    if risk_level: query = query.eq("risk_level", risk_level)
     try:
         resp = query.range(offset, offset + page_size - 1).execute()
         return {
-            "page"         : page,
-            "page_size"    : page_size,
-            "total"        : resp.count,
-            "total_pages"  : -(-resp.count // page_size) if resp.count else 0,
-            "customers"    : resp.data
+            "page"       : page,
+            "page_size"  : page_size,
+            "total"      : resp.count,
+            "total_pages": -(-resp.count // page_size) if resp.count else 0,
+            "customers"  : resp.data
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase query failed: {e}")
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
 
-# ── Messages Log ──
 @app.get("/api/messages-log")
 def get_messages_log(
-    limit : int           = Query(50, ge=1, le=200),
+    limit  : int           = Query(50, ge=1, le=200),
     segment: Optional[str] = Query(None)
 ):
-    """Return recent generated messages from Supabase messages_log table."""
     sb    = get_supabase()
     query = sb.table("messages_log").select("*").order("created_at", desc=True)
-    if segment:
-        query = query.eq("segment", segment)
+    if segment: query = query.eq("segment", segment)
     try:
         resp = query.limit(limit).execute()
         return {"count": len(resp.data), "messages": resp.data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Supabase query failed: {e}")
+        raise HTTPException(status_code=500, detail=f"DB error: {e}")
+
+# ─────────────────────────────────────────────
+# ANALYSIS ENDPOINTS
+# ─────────────────────────────────────────────
+@app.get("/api/analysis/kpis")
+def get_kpis():
+    sb = get_supabase()
+    try:
+        resp = sb.table("customers").select(
+            "segment, risk_level, churn_probability, monetary, frequency"
+        ).limit(10000).execute()
+        rows = resp.data
+        if not rows: raise ValueError("No data")
+        df = pd.DataFrame(rows)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+
+    messages_sent = 0
+    try:
+        msg_resp      = sb.table("messages_log").select("id", count="exact").execute()
+        messages_sent = msg_resp.count or 0
+    except: pass
+
+    urgent_count = 0
+    try:
+        urgent_resp  = sb.table("customers").select("id", count="exact") \
+                         .eq("risk_level", "High").gte("recency", 60).execute()
+        urgent_count = urgent_resp.count or 0
+    except: pass
+
+    return {
+        "total_customers"  : len(df),
+        "churn_rate_pct"   : round(float(df['churn_probability'].mean()) * 100, 2),
+        "high_risk_count"  : int((df['risk_level'].astype(str) == 'High').sum()),
+        "medium_risk_count": int((df['risk_level'].astype(str) == 'Medium').sum()),
+        "low_risk_count"   : int((df['risk_level'].astype(str) == 'Low').sum()),
+        "avg_spend"        : round(float(df['monetary'].mean()), 2),
+        "total_revenue"    : round(float(df['monetary'].sum()), 2),
+        "messages_sent"    : messages_sent,
+        "top_segment"      : df['segment'].value_counts().idxmax(),
+        "avg_visits"       : round(float(df['frequency'].mean()), 2),
+        "urgent_reachout"  : urgent_count,
+    }
+
+@app.get("/api/analysis/rfm")
+def get_rfm_data():
+    sb = get_supabase()
+    try:
+        resp = sb.table("customers").select(
+            "id, segment, recency, frequency, monetary, churn_probability, risk_level"
+        ).limit(500).execute()
+        rows = resp.data
+        if not rows: raise ValueError("No data")
+        df = pd.DataFrame(rows)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+    seg_avg = df.groupby('segment')[['recency','frequency','monetary']].mean().round(2).to_dict('index')
+    return {
+        "scatter_data"    : df[['id','segment','recency','frequency','monetary',
+                                'churn_probability','risk_level']].to_dict('records'),
+        "segment_averages": seg_avg,
+        "total_points"    : len(df)
+    }
+
+@app.get("/api/analysis/churn-distribution")
+def get_churn_distribution():
+    sb = get_supabase()
+    try:
+        resp = sb.table("customers").select(
+            "segment, churn_probability, risk_level"
+        ).limit(10000).execute()
+        rows = resp.data
+        if not rows: raise ValueError("No data")
+        df = pd.DataFrame(rows)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+
+    df['prob_bucket'] = pd.cut(
+        df['churn_probability'],
+        bins=[0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+        labels=['0-10%','10-20%','20-30%','30-40%','40-50%',
+                '50-60%','60-70%','70-80%','80-90%','90-100%']
+    )
+    return {
+        "histogram"        : df['prob_bucket'].value_counts().sort_index().to_dict(),
+        "churn_by_segment" : df.groupby('segment')['churn_probability'].mean().round(4).to_dict(),
+        "risk_by_segment"  : df.groupby(['segment','risk_level']).size().reset_index(name='count').to_dict('records'),
+        "overall_avg_churn": round(float(df['churn_probability'].mean()), 4)
+    }
+
+@app.get("/api/analysis/monthly-visits")
+def get_monthly_visits():
+    sb = get_supabase()
+    try:
+        resp = sb.table("customers").select(
+            "segment, visits_nov, visits_dec, visits_jan, frequency"
+        ).limit(10000).execute()
+        rows = resp.data
+        if not rows: raise ValueError("No data")
+        df = pd.DataFrame(rows)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+
+    monthly_totals = {
+        "November": int(df['visits_nov'].sum()),
+        "December": int(df['visits_dec'].sum()),
+        "January" : int(df['visits_jan'].sum()),
+    }
+    monthly_by_segment = {}
+    for seg in df['segment'].unique():
+        seg_df = df[df['segment'] == seg]
+        monthly_by_segment[seg] = {
+            "November": round(float(seg_df['visits_nov'].mean()), 2),
+            "December": round(float(seg_df['visits_dec'].mean()), 2),
+            "January" : round(float(seg_df['visits_jan'].mean()), 2),
+        }
+    freq_dist = df['frequency'].value_counts().sort_index()
+    return {
+        "monthly_totals"        : monthly_totals,
+        "monthly_by_segment"    : monthly_by_segment,
+        "frequency_distribution": {
+            "1 visit"  : int(freq_dist.get(1, 0)),
+            "2 visits" : int(freq_dist.get(2, 0)),
+            "3 visits" : int(freq_dist.get(3, 0)),
+            "4 visits" : int(freq_dist.get(4, 0)),
+            "5+ visits": int(freq_dist[freq_dist.index >= 5].sum()),
+        }
+    }
+
+@app.get("/api/analysis/revenue")
+def get_revenue_analysis():
+    sb = get_supabase()
+    try:
+        resp = sb.table("customers").select(
+            "id, segment, monetary, avg_order_val, frequency, risk_level, discount_used"
+        ).limit(10000).execute()
+        rows = resp.data
+        if not rows: raise ValueError("No data")
+        df = pd.DataFrame(rows)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+
+    revenue_by_segment = df.groupby('segment').agg(
+        total_revenue  = ('monetary',      'sum'),
+        avg_spend      = ('monetary',      'mean'),
+        avg_order_val  = ('avg_order_val', 'mean'),
+        customer_count = ('id',            'count'),
+        avg_visits     = ('frequency',     'mean'),
+    ).round(2).to_dict('index')
+
+    df['spend_bucket'] = pd.cut(
+        df['monetary'],
+        bins=[0, 50, 100, 200, 500, 1000, 99999],
+        labels=['$0-50','$50-100','$100-200','$200-500','$500-1000','$1000+']
+    )
+    return {
+        "revenue_by_segment": revenue_by_segment,
+        "spend_distribution": df['spend_bucket'].value_counts().sort_index().to_dict(),
+        "top_spenders"      : df.nlargest(10, 'monetary')[['id','segment','monetary','frequency','risk_level']].to_dict('records'),
+        "total_revenue"     : round(float(df['monetary'].sum()), 2),
+        "avg_spend"         : round(float(df['monetary'].mean()), 2),
+        "discount_users"    : int((df['discount_used'] > 0).sum()),
+        "non_discount_users": int((df['discount_used'] == 0).sum()),
+    }
+
+@app.get("/api/analysis/sentiment-breakdown")
+def get_sentiment_breakdown():
+    sb = get_supabase()
+    try:
+        resp = sb.table("absa_predictions").select(
+            "review, aspects, sentiment, feature_opinion"
+        ).limit(10000).execute()
+        rows = resp.data
+        if not rows:
+            raise HTTPException(status_code=404, detail="No ABSA data. Import absa_predictions.csv first.")
+        df = pd.DataFrame(rows)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB error: {e}")
+
+    def safe_parse(s):
+        if isinstance(s, list): return s
+        try:    return ast.literal_eval(str(s))
+        except: return []
+
+    pairs = []
+    for _, row in df.iterrows():
+        aspects    = safe_parse(row.get('aspects',   '[]'))
+        sentiments = safe_parse(row.get('sentiment', '[]'))
+        for asp, sent in zip(aspects, sentiments):
+            pairs.append({'aspect': asp, 'sentiment': sent})
+
+    if not pairs:
+        return {"aspect_frequency": {}, "sentiment_by_aspect": {},
+                "overall_sentiment": {}, "sample_reviews": [], "total_reviews": len(df)}
+
+    pairs_df            = pd.DataFrame(pairs)
+    aspect_frequency    = pairs_df['aspect'].value_counts().to_dict()
+    sentiment_by_aspect = {
+        asp: pairs_df[pairs_df['aspect'] == asp]['sentiment'].value_counts().to_dict()
+        for asp in pairs_df['aspect'].unique()
+    }
+    return {
+        "aspect_frequency"     : aspect_frequency,
+        "sentiment_by_aspect"  : sentiment_by_aspect,
+        "overall_sentiment"    : pairs_df['sentiment'].value_counts().to_dict(),
+        "sample_reviews"       : df[['review','aspects','sentiment']].head(10).to_dict('records'),
+        "total_reviews"        : len(df),
+        "total_aspect_mentions": len(pairs_df)
+    }
