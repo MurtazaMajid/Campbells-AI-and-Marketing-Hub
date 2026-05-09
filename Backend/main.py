@@ -709,7 +709,7 @@ def send_email_via_resend(
     try:
         response = resend.Emails.send({
             "from"   : "Campbell's AI Hub <onboarding@resend.dev>",
-            "to"     : [to_email],
+            "to"     : ["murtazamajid.123@gmail.com"],
             "subject": subject,
             "html"   : html_body,
         })
